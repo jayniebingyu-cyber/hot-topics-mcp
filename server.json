@@ -1,0 +1,12 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.jayniebingyu-cyber/hot-topics-mcp",
+  "title": "Hot Topics MCP",
+  "description": "Trending topics & Reddit intel for content and market research",
+  "websiteUrl": "https://github.com/jayniebingyu-cyber/hot-topics-mcp",
+  "repository": {
+    "url": "https://github.com/jayniebingyu-cyber/hot-topics-mcp",
+    "source": "github"
+  },
+  "version": "1.0.0"
+}
