@@ -2,9 +2,13 @@
 # -*- coding: utf-8 -*-
 """hot-topics-mcp — MCP server giving AI agents real-time trending-topic intelligence
 Sources: Weibo / Baidu / Zhihu / Google Trends + HackerNews & StackExchange community intel.
-Zero dependencies (stdlib only). Protocol: MCP over stdio (JSON-RPC 2.0).
+Zero dependencies (stdlib only). Protocol: MCP (JSON-RPC 2.0) over stdio OR streamable HTTP.
+Usage:
+  python3 server.py              # stdio 模式（本地 Claude Desktop 等）
+  python3 server.py --http 8973  # HTTP 模式（Smithery / 官方 registry 托管接入）
 """
 import json, urllib.request, re, sys, datetime, os, time, gzip, base64, html as html_mod, urllib.parse
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 UA = {'User-Agent': 'hot-topics-mcp/1.0 (trend research)'}
 CACHE = {}
@@ -115,7 +119,7 @@ def tool_get_trending(args):
         try:
             pools[name] = cached(name, SOURCES[name])
             ok.append(name)
-        except Exception as e:
+        except Exception:
             pools[name] = []
     cn_pool = pools.get('weibo', []) + pools.get('baidu', []) + pools.get('zhihu', [])
     en_pool = pools.get('google_trends', [])
@@ -168,19 +172,44 @@ TOOLS = [
          'track': {'type': 'string', 'enum': ['kids', 'ai', 'poa'], 'default': 'ai'}}}},
 ]
 
-# ---------- MCP stdio 主循环 ----------
+# ---------- MCP 协议核心 ----------
 PROTOCOL_VERSION = '2024-11-05'
 
-def reply(rid, result=None, error=None):
-    msg = {'jsonrpc': '2.0', 'id': rid}
-    if error:
-        msg['error'] = error
-    else:
-        msg['result'] = result
-    sys.stdout.write(json.dumps(msg, ensure_ascii=False) + '\n')
-    sys.stdout.flush()
+def handle_request(req):
+    """处理单个 JSON-RPC 请求，返回完整响应 dict；notification 返回 None"""
+    method = req.get('method', '')
+    rid = req.get('id')
+    def ok(result):
+        return {'jsonrpc': '2.0', 'id': rid, 'result': result}
+    def err(code, message):
+        return {'jsonrpc': '2.0', 'id': rid, 'error': {'code': code, 'message': message}}
+    if method == 'initialize':
+        return ok({'protocolVersion': PROTOCOL_VERSION,
+                   'capabilities': {'tools': {}},
+                   'serverInfo': {'name': 'hot-topics-mcp', 'version': '1.0.0'}})
+    elif method == 'notifications/initialized':
+        return None
+    elif method == 'tools/list':
+        return ok({'tools': TOOLS})
+    elif method == 'tools/call':
+        name = req.get('params', {}).get('name', '')
+        args = req.get('params', {}).get('arguments', {}) or {}
+        try:
+            if name == 'get_trending':
+                data = tool_get_trending(args)
+            elif name == 'get_reddit_intel':
+                data = tool_reddit_intel(args)
+            else:
+                return err(-32601, 'unknown tool: ' + name)
+            return ok({'content': [{'type': 'text', 'text': json.dumps(data, ensure_ascii=False, indent=1)}], 'isError': False})
+        except Exception as e:
+            return err(-32000, repr(e))
+    elif rid is not None:
+        return err(-32601, 'method not found: ' + method)
+    return None
 
-def main():
+# ---------- stdio 模式 ----------
+def main_stdio():
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -189,32 +218,73 @@ def main():
             req = json.loads(line)
         except Exception:
             continue
-        method = req.get('method', '')
-        rid = req.get('id')
-        if method == 'initialize':
-            reply(rid, {'protocolVersion': PROTOCOL_VERSION,
-                        'capabilities': {'tools': {}},
-                        'serverInfo': {'name': 'hot-topics-mcp', 'version': '1.0.0'}})
-        elif method == 'notifications/initialized':
-            pass
-        elif method == 'tools/list':
-            reply(rid, {'tools': TOOLS})
-        elif method == 'tools/call':
-            name = req.get('params', {}).get('name', '')
-            args = req.get('params', {}).get('arguments', {}) or {}
-            try:
-                if name == 'get_trending':
-                    data = tool_get_trending(args)
-                elif name == 'get_reddit_intel':
-                    data = tool_reddit_intel(args)
-                else:
-                    reply(rid, error={'code': -32601, 'message': 'unknown tool: ' + name})
-                    continue
-                reply(rid, {'content': [{'type': 'text', 'text': json.dumps(data, ensure_ascii=False, indent=1)}]})
-            except Exception as e:
-                reply(rid, error={'code': -32000, 'message': repr(e)})
-        elif rid is not None:
-            reply(rid, error={'code': -32601, 'message': 'method not found: ' + method})
+        resp = handle_request(req)
+        if resp:
+            sys.stdout.write(json.dumps(resp, ensure_ascii=False) + '\n')
+            sys.stdout.flush()
+
+# ---------- HTTP 模式（streamable HTTP transport）----------
+class MCPHandler(BaseHTTPRequestHandler):
+    def _cors(self):
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Accept, Mcp-Session-Id, Authorization, Last-Event-ID')
+        self.send_header('Access-Control-Allow-Methods', 'POST, GET, OPTIONS, DELETE')
+        self.send_header('Access-Control-Expose-Headers', 'Mcp-Session-Id')
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self._cors()
+        self.end_headers()
+
+    def do_GET(self):
+        # 健康检查 / 端点探测
+        self.send_response(200)
+        self._cors()
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps({'service': 'hot-topics-mcp', 'transport': 'streamable-http', 'ok': True}).encode())
+
+    def do_DELETE(self):
+        self.send_response(200)
+        self._cors()
+        self.end_headers()
+
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length', 0) or 0)
+        body = self.rfile.read(n)
+        try:
+            req = json.loads(body.decode('utf-8'))
+        except Exception:
+            self.send_response(400)
+            self._cors()
+            self.end_headers()
+            return
+        resp = handle_request(req)
+        accept = self.headers.get('Accept', 'application/json')
+        self.send_response(200)
+        self._cors()
+        if 'text/event-stream' in accept and resp is not None:
+            # SSE 包装（兼容请求 SSE 的客户端）
+            self.send_header('Content-Type', 'text/event-stream')
+            self.end_headers()
+            self.wfile.write(('data: ' + json.dumps(resp, ensure_ascii=False) + '\n\n').encode())
+        else:
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            if resp is not None:
+                self.wfile.write(json.dumps(resp, ensure_ascii=False).encode())
+
+    def log_message(self, *a):
+        pass
+
+def main_http(port):
+    print('hot-topics-mcp HTTP server listening on 127.0.0.1:%d' % port, flush=True)
+    HTTPServer(('127.0.0.1', port), MCPHandler).serve_forever()
 
 if __name__ == '__main__':
-    main()
+    if '--http' in sys.argv:
+        i = sys.argv.index('--http')
+        port = int(sys.argv[i + 1]) if len(sys.argv) > i + 1 else 8973
+        main_http(port)
+    else:
+        main_stdio()
