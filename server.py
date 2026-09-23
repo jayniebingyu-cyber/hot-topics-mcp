@@ -7,12 +7,54 @@ Usage:
   python3 server.py              # stdio 模式（本地 Claude Desktop 等）
   python3 server.py --http 8973  # HTTP 模式（Smithery / 官方 registry 托管接入）
 """
-import json, urllib.request, re, sys, datetime, os, time, gzip, base64, html as html_mod, urllib.parse
+import json, urllib.request, re, sys, datetime, os, time, gzip, base64, html as html_mod, urllib.parse, threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 UA = {'User-Agent': 'hot-topics-mcp/1.0 (trend research)'}
 CACHE = {}
 CACHE_TTL = 600  # 10分钟缓存
+
+# ---------- 计费（per-call + freemium）----------
+BILLING_DIR = os.path.dirname(os.path.abspath(__file__))
+KEYS_FILE = os.path.join(BILLING_DIR, 'mcp_keys.json')
+FREE_DAILY = 10        # 免费试用：每IP每天 10 次 tools/call
+PRICE_PER_CALL = 0.03  # 每次调用 $0.03
+GUMROAD_LINK = 'https://niebingyu.gumroad.com/l/hot-topics-api'
+_BILL_LOCK = threading.Lock()
+_free_usage = {}       # {ip: [date_str, count]}
+
+def _load_keys():
+    try:
+        return json.load(open(KEYS_FILE, encoding='utf-8'))
+    except Exception:
+        return {}
+
+def _save_keys(keys):
+    with _BILL_LOCK:
+        tmp = KEYS_FILE + '.tmp'
+        json.dump(keys, open(tmp, 'w', encoding='utf-8'))
+        os.replace(tmp, KEYS_FILE)
+
+def check_billing(ip, key):
+    """计费检查。返回 (allowed, message)。仅对 tools/call 计费。"""
+    if key:
+        keys = _load_keys()
+        k = keys.get(key)
+        if not k:
+            return False, 'invalid_api_key'
+        bal = float(k.get('balance', 0) or 0)
+        if bal < PRICE_PER_CALL:
+            return False, 'insufficient_balance'
+        k['balance'] = round(bal - PRICE_PER_CALL, 4)
+        _save_keys(keys)
+        return True, 'paid'
+    today = datetime.date.today().isoformat()
+    with _BILL_LOCK:
+        u = _free_usage.get(ip)
+        if u and u[0] == today and u[1] >= FREE_DAILY:
+            return False, 'free_limit_reached'
+        _free_usage[ip] = [today, (u[1] + 1) if (u and u[0] == today) else 1]
+    return True, 'free'
 
 def fetch(url, timeout=20, referer=None):
     headers = dict(UA)
@@ -259,6 +301,27 @@ class MCPHandler(BaseHTTPRequestHandler):
             self._cors()
             self.end_headers()
             return
+        # 计费：仅 tools/call 计费，initialize/tools/list 免费
+        if req.get('method') == 'tools/call':
+            ip = self.client_address[0]
+            key = (self.headers.get('Authorization') or '').replace('Bearer ', '').strip()
+            if not key:
+                key = (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get('key') or [''])[0]
+            allowed, reason = check_billing(ip, key)
+            if not allowed:
+                rid = req.get('id')
+                msg = {'invalid_api_key': '无效的 API key，请先购买：' + GUMROAD_LINK,
+                       'insufficient_balance': '余额不足，请充值后继续：' + GUMROAD_LINK,
+                       'free_limit_reached': '免费试用次数已用完（每天 %d 次）。购买后继续使用：' % FREE_DAILY + GUMROAD_LINK}.get(reason, reason)
+                resp = {'jsonrpc': '2.0', 'id': rid,
+                        'error': {'code': -32001, 'message': msg},
+                        'result': {'content': [{'type': 'text', 'text': msg}], 'isError': True}}
+                self.send_response(200)
+                self._cors()
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps(resp, ensure_ascii=False).encode())
+                return
         resp = handle_request(req)
         accept = self.headers.get('Accept', 'application/json')
         self.send_response(200)
