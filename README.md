@@ -1,7 +1,11 @@
 # hot-topics-mcp
 [![M8ven Trust](https://m8ven.ai/badge/mcp/jayniebingyu-cyber-hot-topics-mcp-14mgob)](https://m8ven.ai/mcp/jayniebingyu-cyber/hot-topics-mcp)
 
-**Real-time trending-topic intelligence for AI agents — China (Weibo/Baidu/Zhihu) + US (Google Trends), plus HackerNews & StackExchange community intel. Zero dependencies, pure Python stdlib.**
+**Trending topics for AI agents — Weibo / Baidu / Zhihu (China) + Google Trends (US), plus HackerNews & StackExchange community intel. 2 tools. Zero dependencies, pure Python stdlib.**
+
+- **Hosted (no install):** `https://hot.mcp.goaimoat.com/mcp`
+- **Registry name:** `com.goaimoat/hot-topics`
+- **Free:** 10 calls per day per IP. Then $0.03/call.
 
 Built for content-creation and marketing agents that need to know *what people are actually talking about right now* before they write. Battle-tested in production driving a daily automated content pipeline.
 
@@ -14,8 +18,9 @@ Built for content-creation and marketing agents that need to know *what people a
 
 ## Why this exists
 
-- Chinese trending sources (Weibo/Baidu/Zhihu) are unreachable from many overseas IPs; Google Trends is unreachable from mainland China. Agents running on either side of the firewall are blind to half the internet's conversation.
-- This server multi-sources with graceful degradation: any one source failing doesn't break the pipeline.
+- Trending data is scattered across platforms that expose no API, and each source covers a different audience. An agent that reads only one is working from a partial picture.
+- This server collects them into one structured response, so the agent sees the whole picture in a single call.
+- Multi-source with graceful degradation: any one source failing does not break the pipeline. A source that cannot be read is reported as unavailable rather than filled in with guesses.
 
 ## Quick start
 
