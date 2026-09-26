@@ -1,5 +1,5 @@
 # hot-topics-mcp
-[![M8ven Trust](https://m8ven.ai/badge/mcp/jayniebingyu-cyber/hot-topics-mcp)](https://m8ven.ai/mcp/jayniebingyu-cyber/hot-topics-mcp)
+[![M8ven Trust](https://m8ven.ai/badge/mcp/jayniebingyu-cyber-hot-topics-mcp-14mgob)](https://m8ven.ai/mcp/jayniebingyu-cyber/hot-topics-mcp)
 
 **Real-time trending-topic intelligence for AI agents — China (Weibo/Baidu/Zhihu) + US (Google Trends), plus HackerNews & StackExchange community intel. Zero dependencies, pure Python stdlib.**
 
